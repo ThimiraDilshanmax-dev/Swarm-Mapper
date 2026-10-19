@@ -13,7 +13,7 @@ constexpr int RGB_PIN = 38; // Official v1.1: 38; older official boards: 48. Ver
 constexpr int STOP_PIN = 18;
 constexpr bool USE_PHYSICAL_STOP_CONTACT = false;
 // 0 = VL53L0X, 1 = VL53L1X. "V2" is not a chip identifier.
-constexpr int TOF_MODELS[3] = {1, 1, 1};
+constexpr int TOF_MODELS[3] = {0,0,0};
 constexpr uint32_t TOF_BUDGET_US = 50000;
 constexpr uint32_t TOF_PERIOD_MS = 80;
 constexpr uint32_t WATCHDOG_MS = 250;

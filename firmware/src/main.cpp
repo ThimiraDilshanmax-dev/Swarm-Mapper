@@ -160,7 +160,7 @@ void onSocketEvent(WStype_t type,uint8_t *payload,size_t length) {
 }
 void initializeSensors() {
   Wire.begin(SDA_PIN,SCL_PIN);Wire.setClock(100000);Wire.setTimeOut(10);
-  for(int i=0;i<3;i++){pinMode(XSHUT_PINS[i],OUTPUT_OPEN_DRAIN);digitalWrite(XSHUT_PINS[i],LOW);}
+  for(int i=0;i<3;i++){pinMode(XSHUT_PINS[i],OUTPUT);digitalWrite(XSHUT_PINS[i],LOW);}
   delay(10);
   imuReady=imu.begin(0x68,&Wire);
   if(imuReady) {
@@ -170,9 +170,9 @@ void initializeSensors() {
   }
   for(int i=0;i<3;i++) {
     // HIGH releases the open-drain pin; the breakout supplies its own XSHUT pull-up.
-    digitalWrite(XSHUT_PINS[i],HIGH);delay(15);
+    digitalWrite(XSHUT_PINS[i],HIGH);delay(50);
     if(TOF_MODELS[i]==1) {
-      l1[i].setBus(&Wire);l1[i].setTimeout(20);
+      l1[i].setBus(&Wire);l1[i].setTimeout(200);
       sensorReady[i]=l1[i].init();
       if(sensorReady[i]) {
         l1[i].setAddress(0x30+i);l1[i].setDistanceMode(VL53L1X::Long);
@@ -180,7 +180,7 @@ void initializeSensors() {
         l1[i].setROISize(4,4);l1[i].startContinuous(TOF_PERIOD_MS);
       }
     } else {
-      l0[i].setBus(&Wire);l0[i].setTimeout(20);sensorReady[i]=l0[i].init();
+      l0[i].setBus(&Wire);l0[i].setTimeout(200);sensorReady[i]=l0[i].init();
       if(sensorReady[i]) {
         l0[i].setAddress(0x30+i);l0[i].setMeasurementTimingBudget(TOF_BUDGET_US);
         l0[i].startContinuous(TOF_PERIOD_MS);
@@ -301,7 +301,7 @@ void loop() {
     healthAt=now;
     for(int i=0;i<3;i++)if(sensorReady[i]){
       Wire.beginTransmission(0x30+i);
-      if(Wire.endTransmission()!=0 || now-lastRangeAt[i]>std::max<uint32_t>(1000,TOF_PERIOD_MS*8)){
+      if(Wire.endTransmission()!=0 || now-lastRangeAt[i]>5000){
         sensorReady[i]=false;disableMotion();
         Serial.printf("%s ToF disconnected or stale; motors inhibited until restart.\n",sensorNames[i]);
       }
