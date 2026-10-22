@@ -251,6 +251,28 @@ void updateLed() {
   else colour=rgb.Color(0,20,5);
   rgb.setPixelColor(0,colour);rgb.show();
 }
+
+void scanI2C() {
+  Serial.println("\n--- I2C SCAN ---");
+
+  int count = 0;
+
+  for (uint8_t address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("Device found: 0x%02X\n", address);
+      count++;
+    }
+  }
+
+  Serial.printf("Devices found: %d\n", count);
+}
+
+
+
+
+
 void setup() {
   for(int i=0;i<2;i++)for(int j=0;j<2;j++) {
     int ch=i*2+j;pinMode(MOTOR_PINS[i][j],OUTPUT);digitalWrite(MOTOR_PINS[i][j],LOW);
@@ -261,6 +283,8 @@ void setup() {
   bootId=String((uint32_t)esp_random(),HEX)+String((uint32_t)esp_random(),HEX);
   for(int i=0;i<2;i++){encoders[i].attachFullQuad(ENCODER_PINS[i][0],ENCODER_PINS[i][1]);encoders[i].clearCount();}
   initializeSensors();
+  delay(200);
+  scanI2C();
   telemetryBatch["type"]="batch";
   telemetryBatch["frames"].to<JsonArray>();
   xTaskCreatePinnedToCore(controlTask,"motor-watchdog",4096,nullptr,3,nullptr,1);

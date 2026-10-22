@@ -9,7 +9,6 @@ __pycache__/
 *.egg-info/
 *.tsbuildinfo
 firmware/.pio/
-firmware/include/secrets.h
 .env
 *.log
 test-results/
