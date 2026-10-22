@@ -3,8 +3,8 @@
 #include <Wire.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
-#include <VL53L0X.h>
-#include <VL53L1X.h>
+#include <Adafruit_VL53L0X.h>
+#include <Adafruit_VL53L1X.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_NeoPixel.h>
 #include <ESP32Encoder.h>
@@ -23,8 +23,8 @@ JsonDocument telemetryBatch;
 Adafruit_MPU6050 imu;
 Adafruit_NeoPixel rgb(1, RGB_PIN, NEO_GRB + NEO_KHZ800);
 ESP32Encoder encoders[2];
-VL53L0X l0[3];
-VL53L1X l1[3];
+Adafruit_VL53L0X l0[3];
+Adafruit_VL53L1X l1[3];
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 const char *sensorNames[3] = {"front", "left", "right"};
 std::atomic<bool> sensorReady[3] = {{false}, {false}, {false}};
@@ -171,19 +171,19 @@ void initializeSensors() {
   for(int i=0;i<3;i++) {
     // HIGH releases the open-drain pin; the breakout supplies its own XSHUT pull-up.
     digitalWrite(XSHUT_PINS[i],HIGH);delay(50);
+    uint8_t newAddr = 0x30 + i;
     if(TOF_MODELS[i]==1) {
-      l1[i].setBus(&Wire);l1[i].setTimeout(200);
-      sensorReady[i]=l1[i].init();
+      sensorReady[i]=l1[i].begin(newAddr,&Wire);
       if(sensorReady[i]) {
-        l1[i].setAddress(0x30+i);l1[i].setDistanceMode(VL53L1X::Long);
-        l1[i].setMeasurementTimingBudget(TOF_BUDGET_US);
-        l1[i].setROISize(4,4);l1[i].startContinuous(TOF_PERIOD_MS);
+        l1[i].setTimingBudget(TOF_BUDGET_US/1000);
+        l1[i].setDistanceMode(VL53L1X::Long);
+        l1[i].startRanging();
       }
     } else {
-      l0[i].setBus(&Wire);l0[i].setTimeout(200);sensorReady[i]=l0[i].init();
+      sensorReady[i]=l0[i].begin(newAddr,false,&Wire);
       if(sensorReady[i]) {
-        l0[i].setAddress(0x30+i);l0[i].setMeasurementTimingBudget(TOF_BUDGET_US);
-        l0[i].startContinuous(TOF_PERIOD_MS);
+        l0[i].setMeasurementTimingBudgetMicroSeconds(TOF_BUDGET_US);
+        l0[i].startRangeContinuous(TOF_PERIOD_MS);
       }
     }
     if(!sensorReady[i])digitalWrite(XSHUT_PINS[i],LOW);
@@ -195,24 +195,31 @@ void initializeSensors() {
 void pollRanges() {
   for(int i=0;i<3;i++) {
     if(!sensorReady[i])continue;
-    bool ready=TOF_MODELS[i] ? l1[i].dataReady() : (l0[i].readReg(VL53L0X::RESULT_INTERRUPT_STATUS)&7);
+    bool ready=TOF_MODELS[i] ? l1[i].dataReady() : l0[i].isRangeComplete();
     if(!ready)continue;
     lastRangeAt[i]=millis();
     auto &r=pending[i];
     r.fresh=true;r.t=max(0.0,deviceTime()-TOF_BUDGET_US/2000000.0);
     if(TOF_MODELS[i]) {
-      uint16_t mm=l1[i].read(false);
-      r.distance=mm/1000.0f;r.status=(int)l1[i].ranging_data.range_status;
-      r.valid=r.status==0 && !l1[i].timeoutOccurred() && mm>=40 && mm<=4000;
-      r.signal=l1[i].ranging_data.peak_signal_count_rate_MCPS;
-      r.ambient=l1[i].ranging_data.ambient_count_rate_MCPS;
+      int16_t mm=l1[i].distance();
+      uint8_t status=l1[i].vl_status;
+      l1[i].clearInterrupt();
+      r.status=(int)status;
+      if(mm>=40 && mm<=4000) {
+        r.distance=mm/1000.0f;
+        r.valid=(status==0);
+      } else {
+        r.distance=0;
+        r.valid=false;
+      }
+      r.signal=r.ambient=-1;
     } else {
-      // ST's VL53L0X device status is bits 6:3; only code 11 is a valid
-      // device result. A plausible distance alone does not establish validity.
-      // Reference: ST vl53l0x_api_core.cpp, VL53L0X_get_pal_range_status().
-      r.status=(l0[i].readReg(VL53L0X::RESULT_RANGE_STATUS)&0x78)>>3;
-      uint16_t mm=l0[i].readRangeContinuousMillimeters();
-      r.distance=mm/1000.0f;r.valid=r.status==11&&!l0[i].timeoutOccurred()&&mm>=30&&mm<=2000;
+      uint8_t status=l0[i].readRangeStatus();
+      uint16_t mm=l0[i].readRange();
+      r.distance=mm/1000.0f;
+      r.status=(int)status;
+      // Adafruit VL53L0X status 0 = Range Valid (VL53L0X_ERROR_NONE)
+      r.valid=(status==0) && mm>=30 && mm<=2000;
       r.signal=r.ambient=-1;
     }
   }
