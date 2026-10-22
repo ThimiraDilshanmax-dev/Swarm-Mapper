@@ -176,7 +176,9 @@ void initializeSensors() {
       sensorReady[i]=l1[i].begin(newAddr,&Wire);
       if(sensorReady[i]) {
         l1[i].setTimingBudget(TOF_BUDGET_US/1000);
-        l1[i].setDistanceMode(VL53L1X::Long);
+        l1[i].VL53L1X_SetDistanceMode(2); // 1 = Short, 2 = Long
+        l1[i].VL53L1X_SetROI(4, 4);
+        l1[i].VL53L1X_SetInterMeasurementInMs(TOF_PERIOD_MS);
         l1[i].startRanging();
       }
     } else {
@@ -201,21 +203,22 @@ void pollRanges() {
     auto &r=pending[i];
     r.fresh=true;r.t=max(0.0,deviceTime()-TOF_BUDGET_US/2000000.0);
     if(TOF_MODELS[i]) {
-      int16_t mm=l1[i].distance();
-      uint8_t status=l1[i].vl_status;
+      uint16_t mm=0;
+      uint8_t status=255;
+      uint16_t sigRate=0, ambRate=0;
+      l1[i].VL53L1X_GetRangeStatus(&status);
+      l1[i].VL53L1X_GetDistance(&mm);
+      l1[i].VL53L1X_GetSignalRate(&sigRate);
+      l1[i].VL53L1X_GetAmbientRate(&ambRate);
       l1[i].clearInterrupt();
+      r.distance=mm/1000.0f;
       r.status=(int)status;
-      if(mm>=40 && mm<=4000) {
-        r.distance=mm/1000.0f;
-        r.valid=(status==0);
-      } else {
-        r.distance=0;
-        r.valid=false;
-      }
-      r.signal=r.ambient=-1;
+      r.valid=(status==0) && mm>=40 && mm<=4000;
+      r.signal=sigRate/1000.0f; // kcps to MCPS
+      r.ambient=ambRate/1000.0f;
     } else {
+      uint16_t mm=l0[i].readRangeResult(); // Non-blocking continuous read & clear interrupt
       uint8_t status=l0[i].readRangeStatus();
-      uint16_t mm=l0[i].readRange();
       r.distance=mm/1000.0f;
       r.status=(int)status;
       // Adafruit VL53L0X status 0 = Range Valid (VL53L0X_ERROR_NONE)
