@@ -25,6 +25,7 @@ Adafruit_NeoPixel rgb(1, RGB_PIN, NEO_GRB + NEO_KHZ800);
 ESP32Encoder encoders[2];
 Adafruit_VL53L0X l0[3];
 Adafruit_VL53L1X l1[3];
+int activeTofModel[3] = {-1, -1, -1};
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 const char *sensorNames[3] = {"front", "left", "right"};
 std::atomic<bool> sensorReady[3] = {{false}, {false}, {false}};
@@ -115,7 +116,7 @@ void onSocketEvent(WStype_t type,uint8_t *payload,size_t length) {
     doc["protocol"]=2;
     doc["firmware"]="contour-0.1.0";doc["motors_enabled"]=motorsAvailable();doc["ip"]=WiFi.localIP().toString();
     JsonArray models=doc["tof_models"].to<JsonArray>();
-    for(int i=0;i<3;i++)models.add(TOF_MODELS[i] ? "VL53L1X" : "VL53L0X");
+    for(int i=0;i<3;i++)models.add((activeTofModel[i]==1 || (activeTofModel[i]<0 && TOF_MODELS[i])) ? "VL53L1X" : "VL53L0X");
     String text;serializeJson(doc,text);socketClient.sendTXT(text);return;
   }
   if(type!=WStype_TEXT)return;
@@ -158,10 +159,40 @@ void onSocketEvent(WStype_t type,uint8_t *payload,size_t length) {
   control=c;
   portEXIT_CRITICAL(&stateMux);
 }
+int detectTofChipModel() {
+  Wire.beginTransmission(0x29);
+  if (Wire.endTransmission() != 0) {
+    return -1; // No ACK at default 0x29
+  }
+
+  // 1. Probe VL53L0X Model ID (8-bit register 0xC0 expects 0xEE)
+  Wire.beginTransmission(0x29);
+  Wire.write(0xC0);
+  if (Wire.endTransmission(false) == 0) {
+    if (Wire.requestFrom((uint8_t)0x29, (size_t)1) == 1) {
+      uint8_t id = Wire.read();
+      if (id == 0xEE) return 0; // VL53L0X
+    }
+  }
+
+  // 2. Probe VL53L1X Model ID (16-bit register 0x010F expects 0xEA / 0xEACC)
+  Wire.beginTransmission(0x29);
+  Wire.write(0x01);
+  Wire.write(0x0F);
+  if (Wire.endTransmission(false) == 0) {
+    if (Wire.requestFrom((uint8_t)0x29, (size_t)2) == 2) {
+      uint16_t id16 = ((uint16_t)Wire.read() << 8) | Wire.read();
+      if (id16 == 0xEACC || (id16 >> 8) == 0xEA) return 1; // VL53L1X
+    }
+  }
+
+  return -2; // Unknown chip ID at 0x29
+}
+
 void initializeSensors() {
   Wire.begin(SDA_PIN,SCL_PIN);Wire.setClock(100000);Wire.setTimeOut(50);
   for(int i=0;i<3;i++){pinMode(XSHUT_PINS[i],OUTPUT);digitalWrite(XSHUT_PINS[i],LOW);}
-  delay(10);
+  delay(20);
   imuReady=imu.begin(0x68,&Wire);
   if(imuReady) {
     imu.setAccelerometerRange(MPU6050_RANGE_4_G);
@@ -171,8 +202,15 @@ void initializeSensors() {
   for(int i=0;i<3;i++) {
     // HIGH releases the open-drain pin; the breakout supplies its own XSHUT pull-up.
     digitalWrite(XSHUT_PINS[i],HIGH);delay(50);
+
+    int detected = detectTofChipModel();
+    if (detected < 0 && detected != -1) {
+      detected = TOF_MODELS[i]; // Fallback to config if response was ambiguous
+    }
+
     uint8_t newAddr = 0x30 + i;
-    if(TOF_MODELS[i]==1) {
+    if(detected == 1) {
+      activeTofModel[i] = 1;
       sensorReady[i]=l1[i].begin(newAddr,&Wire);
       if(sensorReady[i]) {
         l1[i].setTimingBudget(TOF_BUDGET_US/1000);
@@ -181,16 +219,25 @@ void initializeSensors() {
         l1[i].VL53L1X_SetInterMeasurementInMs(TOF_PERIOD_MS);
         l1[i].startRanging();
       }
-    } else {
+      Serial.printf("%s ToF: Detected VL53L1X -> %s (Addr: 0x%02X)\n",
+                    sensorNames[i], sensorReady[i]?"ready":"FAILED", newAddr);
+    } else if(detected == 0) {
+      activeTofModel[i] = 0;
       sensorReady[i]=l0[i].begin(newAddr,false,&Wire);
       if(sensorReady[i]) {
         l0[i].setMeasurementTimingBudgetMicroSeconds(TOF_BUDGET_US);
         l0[i].startRangeContinuous(TOF_PERIOD_MS);
       }
+      Serial.printf("%s ToF: Detected VL53L0X -> %s (Addr: 0x%02X)\n",
+                    sensorNames[i], sensorReady[i]?"ready":"FAILED", newAddr);
+    } else {
+      activeTofModel[i] = -1;
+      sensorReady[i] = false;
+      Serial.printf("%s ToF: FAILED - no response at 0x29 (XSHUT pin %d)\n",
+                    sensorNames[i], XSHUT_PINS[i]);
     }
     if(!sensorReady[i])digitalWrite(XSHUT_PINS[i],LOW);
     lastRangeAt[i]=millis();
-    Serial.printf("%s ToF: %s\n",sensorNames[i],sensorReady[i]?"ready":"FAILED (check chip model and wiring)");
   }
   Wire.setClock(100000);
   Wire.setTimeOut(50);
@@ -200,16 +247,16 @@ void pollRanges() {
   for(int i=0;i<3;i++) {
     if(!sensorReady[i])continue;
     bool ready = false;
-    if (TOF_MODELS[i] == 1) {
+    if (activeTofModel[i] == 1) {
       ready = l1[i].dataReady();
-    } else {
+    } else if (activeTofModel[i] == 0) {
       ready = l0[i].isRangeComplete() && (l0[i].Status == VL53L0X_ERROR_NONE);
     }
     if(!ready)continue;
     lastRangeAt[i]=millis();
     auto &r=pending[i];
     r.fresh=true;r.t=max(0.0,deviceTime()-TOF_BUDGET_US/2000000.0);
-    if(TOF_MODELS[i]) {
+    if(activeTofModel[i] == 1) {
       uint16_t mm=0;
       uint8_t status=255;
       uint16_t sigRate=0, ambRate=0;
