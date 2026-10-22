@@ -159,7 +159,7 @@ void onSocketEvent(WStype_t type,uint8_t *payload,size_t length) {
   portEXIT_CRITICAL(&stateMux);
 }
 void initializeSensors() {
-  Wire.begin(SDA_PIN,SCL_PIN);Wire.setClock(100000);Wire.setTimeOut(10);
+  Wire.begin(SDA_PIN,SCL_PIN);Wire.setClock(100000);Wire.setTimeOut(50);
   for(int i=0;i<3;i++){pinMode(XSHUT_PINS[i],OUTPUT);digitalWrite(XSHUT_PINS[i],LOW);}
   delay(10);
   imuReady=imu.begin(0x68,&Wire);
@@ -192,12 +192,19 @@ void initializeSensors() {
     lastRangeAt[i]=millis();
     Serial.printf("%s ToF: %s\n",sensorNames[i],sensorReady[i]?"ready":"FAILED (check chip model and wiring)");
   }
+  Wire.setClock(100000);
+  Wire.setTimeOut(50);
   Serial.printf("MPU6050: %s\n",imuReady?"ready":"FAILED");
 }
 void pollRanges() {
   for(int i=0;i<3;i++) {
     if(!sensorReady[i])continue;
-    bool ready=TOF_MODELS[i] ? l1[i].dataReady() : l0[i].isRangeComplete();
+    bool ready = false;
+    if (TOF_MODELS[i] == 1) {
+      ready = l1[i].dataReady();
+    } else {
+      ready = l0[i].isRangeComplete() && (l0[i].Status == VL53L0X_ERROR_NONE);
+    }
     if(!ready)continue;
     lastRangeAt[i]=millis();
     auto &r=pending[i];
@@ -308,12 +315,15 @@ void setup() {
                 HARDWARE_VERIFIED?"ENABLED":"MOTORS INHIBITED",RGB_PIN);
 }
 void loop() {
-  static uint32_t imuAt=0,telemetryAt=0,ledAt=0;
+  static uint32_t imuAt=0,telemetryAt=0,ledAt=0,tofPollAt=0;
   static uint32_t healthAt=0;
   static float gyro=0;
   socketClient.loop();
   uint32_t now=millis();
-  pollRanges();
+  if(now-tofPollAt>=10){
+    tofPollAt=now;
+    pollRanges();
+  }
   if(now-imuAt>=10) {
     imuAt=now;
     if(imuReady){
@@ -334,10 +344,9 @@ void loop() {
   if(now-healthAt>=1000){
     healthAt=now;
     for(int i=0;i<3;i++)if(sensorReady[i]){
-      Wire.beginTransmission(0x30+i);
-      if(Wire.endTransmission()!=0 || now-lastRangeAt[i]>5000){
+      if(now-lastRangeAt[i]>5000){
         sensorReady[i]=false;disableMotion();
-        Serial.printf("%s ToF disconnected or stale; motors inhibited until restart.\n",sensorNames[i]);
+        Serial.printf("%s ToF stale; motors inhibited until restart.\n",sensorNames[i]);
       }
     }
   }
